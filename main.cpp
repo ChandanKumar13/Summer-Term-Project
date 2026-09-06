@@ -306,6 +306,21 @@ int main() {
 
     httplib::Server svr;
 
+    //new changes
+    // Add CORS header to allow browser visualizers to fetch data
+    svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type");
+    });
+
+    // Handle preflight OPTIONS requests from browsers
+    svr.Options(R"(.*)", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+    });
+
+    //new changes until this
+
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content("{\"status\": \"healthy\"}\n", "application/json");
     });
