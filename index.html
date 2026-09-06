@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campus Navigation Engine | Live Benchmark</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.4);
+      --path: #22c55e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; display: flex; flex-direction: column; align-items: center; }
+    h1 { font-size: 1.5rem; margin-bottom: 6px; }
+    p.sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 20px; }
+    .container { display: flex; flex-direction: column; gap: 20px; max-width: 900px; width: 100%; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+    .controls { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 12px; align-items: end; }
+    label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; font-weight: 600; }
+    input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: #0b1120; color: var(--text); font-size: 0.875rem; }
+    button { background: var(--accent); color: #0f172a; font-weight: bold; border: none; cursor: pointer; transition: opacity 0.2s; }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    canvas { width: 100%; height: 420px; background: #070b14; border-radius: 8px; border: 1px solid var(--border); display: block; }
+    .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+    .metric-card { background: #0c1222; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .metric-title { font-size: 0.8rem; font-weight: bold; margin-bottom: 8px; color: var(--accent); }
+    .metric-row { display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px; }
+    .status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: #334155; display: inline-block; }
+  </style>
+</head>
+<body>
+
+  <h1>Campus Navigation & Pathfinding Engine</h1>
+  <p class="sub">High-Performance C++ Graph Router & Benchmarking Visualizer</p>
+
+  <div class="container">
+    <div class="card">
+      <div class="controls">
+        <div>
+          <label>API Base URL</label>
+          <input type="text" id="apiUrl" placeholder="https://<your-service>.onrender.com" />
+        </div>
+        <div>
+          <label>Origin</label>
+          <select id="srcNode"></select>
+        </div>
+        <div>
+          <label>Destination</label>
+          <select id="dstNode"></select>
+        </div>
+        <button id="calcBtn" onclick="findRoute()">Find Route</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <canvas id="graphCanvas"></canvas>
+    </div>
+
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 0.9rem; font-weight: 600;">Engine Benchmark Results</span>
+        <span id="routeSummary" class="status-badge">Idle</span>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-title">Dijkstra Algorithm (Uniform-Cost Search)</div>
+          <div class="metric-row"><span>Nodes Explored:</span><strong id="dijkNodes">-</strong></div>
+          <div class="metric-row"><span>Transit Cost:</span><strong id="dijkCost">-</strong></div>
+          <div class="metric-row"><span>Execution Latency:</span><strong id="dijkTime">-</strong></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">A* Search (Euclidean Distance Heuristic)</div>
+          <div class="metric-row"><span>Nodes Explored:</span><strong id="astarNodes">-</strong></div>
+          <div class="metric-row"><span>Transit Cost:</span><strong id="astarCost">-</strong></div>
+          <div class="metric-row"><span>Execution Latency:</span><strong id="astarTime">-</strong></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Spatial coordinates matching your C++ GraphEngine
+    const NODES = {
+      "Gate_A": { x: 0.0, y: 0.0 },
+      "Admin_Block": { x: 2.0, y: 3.0 },
+      "Central_Library": { x: 5.0, y: 8.0 },
+      "Turing_Lab": { x: 4.0, y: 2.0 },
+      "Cafeteria": { x: 7.0, y: 4.0 },
+      "Hostel_Tower": { x: 9.0, y: 9.0 },
+      "Sports_Complex": { x: 8.0, y: 1.0 }
+    };
+
+    const EDGES = [
+      ["Gate_A", "Admin_Block"], ["Gate_A", "Turing_Lab"],
+      ["Admin_Block", "Central_Library"], ["Admin_Block", "Turing_Lab"],
+      ["Turing_Lab", "Cafeteria"], ["Turing_Lab", "Sports_Complex"],
+      ["Central_Library", "Cafeteria"], ["Central_Library", "Hostel_Tower"],
+      ["Cafeteria", "Hostel_Tower"], ["Sports_Complex", "Cafeteria"]
+    ];
+
+    const canvas = document.getElementById("graphCanvas");
+    const ctx = canvas.getContext("2d");
+    let activePath = [];
+
+    function initSelectors() {
+      const srcSelect = document.getElementById("srcNode");
+      const dstSelect = document.getElementById("dstNode");
+      Object.keys(NODES).forEach(node => {
+        srcSelect.add(new Option(node, node));
+        dstSelect.add(new Option(node, node));
+      });
+      srcSelect.value = "Gate_A";
+      dstSelect.value = "Hostel_Tower";
+    }
+
+    function resizeCanvas() {
+      canvas.width = canvas.parentElement.clientWidth - 36;
+      canvas.height = 420;
+      drawGraph();
+    }
+
+    function toScreenCoords(nx, ny) {
+      const padX = 60, padY = 50;
+      const sx = padX + (nx / 9.5) * (canvas.width - 2 * padX);
+      const sy = (canvas.height - padY) - (ny / 9.5) * (canvas.height - 2 * padY);
+      return { x: sx, y: sy };
+    }
+
+    function drawGraph() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 1. Draw Edges
+      EDGES.forEach(([u, v]) => {
+        const p1 = toScreenCoords(NODES[u].x, NODES[u].y);
+        const p2 = toScreenCoords(NODES[v].x, NODES[v].y);
+
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = "#334155";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // 2. Highlight Shortest Path
+      if (activePath.length > 1) {
+        ctx.beginPath();
+        for (let i = 0; i < activePath.length; i++) {
+          const pt = toScreenCoords(NODES[activePath[i]].x, NODES[activePath[i]].y);
+          if (i === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.strokeStyle = "#22c55e";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      }
+
+      // 3. Draw Nodes
+      Object.entries(NODES).forEach(([label, pos]) => {
+        const pt = toScreenCoords(pos.x, pos.y);
+        const isPath = activePath.includes(label);
+
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isPath ? 9 : 7, 0, 2 * Math.PI);
+        ctx.fillStyle = isPath ? "#22c55e" : "#38bdf8";
+        ctx.fill();
+        ctx.strokeStyle = "#0f172a";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.font = "11px -apple-system, sans-serif";
+        ctx.fillStyle = "#cbd5e1";
+        ctx.textAlign = "center";
+        ctx.fillText(label, pt.x, pt.y - 14);
+      });
+    }
+
+    async function findRoute() {
+      const baseUrl = document.getElementById("apiUrl").value.trim().replace(/\/+$/, "");
+      const src = document.getElementById("srcNode").value;
+      const dst = document.getElementById("dstNode").value;
+      const btn = document.getElementById("calcBtn");
+      const summary = document.getElementById("routeSummary");
+
+      if (!baseUrl) {
+        alert("Please enter your Render API Base URL first.");
+        return;
+      }
+
+      btn.disabled = true;
+      summary.textContent = "Routing...";
+      summary.style.background = "#d97706";
+
+      try {
+        const res = await fetch(`${baseUrl}/route?src=${src}&dst=${dst}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        activePath = data.astar.path || [];
+        drawGraph();
+
+        // Update Dijkstra metrics
+        document.getElementById("dijkNodes").textContent = data.dijkstra.nodes_explored;
+        document.getElementById("dijkCost").textContent = Number(data.dijkstra.total_cost).toFixed(2);
+        document.getElementById("dijkTime").textContent = `${data.dijkstra.latency_ns} ns`;
+
+        // Update A* metrics
+        document.getElementById("astarNodes").textContent = data.astar.nodes_explored;
+        document.getElementById("astarCost").textContent = Number(data.astar.total_cost).toFixed(2);
+        document.getElementById("astarTime").textContent = `${data.astar.latency_ns} ns`;
+
+        summary.textContent = `Path: ${activePath.join(" → ")}`;
+        summary.style.background = "#15803d";
+      } catch (err) {
+        alert(`API Request Failed: ${err.message}. Make sure your URL is correct and the server is awake.`);
+        summary.textContent = "Request Failed";
+        summary.style.background = "#b91c1c";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    initSelectors();
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+  </script>
+</body>
+</html>
