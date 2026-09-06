@@ -2,7 +2,6 @@
 
 #include <iostream>
 #include <vector>
-#include "httplib.h"
 #include <queue>
 #include <cmath>
 #include <string>
@@ -13,6 +12,9 @@
 #include <chrono>
 #include <limits>
 #include <iomanip>
+#include <cstdlib>
+
+#include "httplib.h"
 
 // ============================================================================
 // Core Domain Models & Definitions
@@ -96,14 +98,15 @@ public:
     }
 
     bool updateEdgeCongestion(int from, int to, double factor) {
-        if (from >= static_cast<int>(adj.size())) return false;
+        if (from < 0 || from >= static_cast<int>(adj.size())) return false;
+        bool updated = false;
         for (auto& edge : adj[from]) {
             if (edge.target_id == to) {
                 edge.congestion_factor = std::max(0.0, factor);
-                return true;
+                updated = true;
             }
         }
-        return false;
+        return updated;
     }
 
     [[nodiscard]] int getNodeCount() const noexcept { return static_cast<int>(nodes.size()); }
@@ -152,7 +155,6 @@ public:
         std::vector<int> parent(n, -1);
         std::vector<bool> closed_set(n, false);
 
-        // Min-heap storing: {f_score, node_id}
         using State = std::pair<double, int>;
         std::priority_queue<State, std::vector<State>, std::greater<State>> open_set;
 
@@ -214,7 +216,7 @@ public:
 };
 
 // ============================================================================
-// Service Layer & CLI Orchestrator
+// Service Layer & CLI / HTTP Orchestrator
 // ============================================================================
 
 class NavigationService {
@@ -225,16 +227,14 @@ public:
     NavigationService() = default;
 
     void bootstrapCampusNetwork() {
-        // Node Registration (X, Y in hundred-meter coordinate units)
-        int gate_a = graph.addNode("Gate_A", 0.0, 0.0);
-        int admin  = graph.addNode("Admin_Block", 2.0, 3.0);
+        int gate_a  = graph.addNode("Gate_A", 0.0, 0.0);
+        int admin   = graph.addNode("Admin_Block", 2.0, 3.0);
         int library = graph.addNode("Central_Library", 5.0, 8.0);
-        int lab    = graph.addNode("Turing_Lab", 4.0, 2.0);
-        int cafet  = graph.addNode("Cafeteria", 7.0, 4.0);
-        int hostel = graph.addNode("Hostel_Tower", 9.0, 9.0);
-        int sports = graph.addNode("Sports_Complex", 8.0, 1.0);
+        int lab     = graph.addNode("Turing_Lab", 4.0, 2.0);
+        int cafet   = graph.addNode("Cafeteria", 7.0, 4.0);
+        int hostel  = graph.addNode("Hostel_Tower", 9.0, 9.0);
+        int sports  = graph.addNode("Sports_Complex", 8.0, 1.0);
 
-        // Edge Registration (Distance / Nominal Transit Costs)
         graph.addEdge(gate_a, admin, 3.6, true);
         graph.addEdge(gate_a, lab, 4.4, true);
         graph.addEdge(admin, library, 5.8, true);
@@ -247,111 +247,127 @@ public:
         graph.addEdge(sports, cafet, 3.1, true);
     }
 
-    void simulateIncident(const std::string& from_label, const std::string& to_label, double congestion_multiplier) {
+    bool simulateIncident(const std::string& from_label, const std::string& to_label, double congestion_multiplier) {
         int u = graph.getIdByLabel(from_label);
         int v = graph.getIdByLabel(to_label);
-        if (graph.updateEdgeCongestion(u, v, congestion_multiplier)) {
-            std::cout << "[SYSTEM MONITOR] Incident reported between " 
-                      << from_label << " -> " << to_label 
-                      << " (Congestion factor updated to " << congestion_multiplier << "x)\n";
-        }
+        if (u == -1 || v == -1) return false;
+        return graph.updateEdgeCongestion(u, v, congestion_multiplier);
     }
 
-    void runBenchmark(const std::string& start_label, const std::string& end_label) {
+    std::string routeToJson(const std::string& start_label, const std::string& end_label) {
         int src = graph.getIdByLabel(start_label);
         int dst = graph.getIdByLabel(end_label);
 
         if (src == -1 || dst == -1) {
-            std::cout << "[ERROR] Invalid landmark queried.\n";
-            return;
+            return "{\"error\": \"Invalid source or destination landmark.\"}";
         }
 
-        UnifiedRoutingEngine dijkstra_engine(AlgorithmType::DIJKSTRA);
-        UnifiedRoutingEngine astar_engine(AlgorithmType::ASTAR);
+        UnifiedRoutingEngine dijkstra(AlgorithmType::DIJKSTRA);
+        UnifiedRoutingEngine astar(AlgorithmType::ASTAR);
 
-        PathResult dijkstra_res = dijkstra_engine.calculateRoute(graph, src, dst);
-        PathResult astar_res = astar_engine.calculateRoute(graph, src, dst);
+        PathResult d_res = dijkstra.calculateRoute(graph, src, dst);
+        PathResult a_res = astar.calculateRoute(graph, src, dst);
 
-        std::cout << "\n===============================================================\n";
-        std::cout << " ROUTING QUERY: " << start_label << " -> " << end_label << "\n";
-        std::cout << "===============================================================\n";
-
-        auto printMetricRow = [](const std::string& algo, const PathResult& res) {
-            std::cout << std::left << std::setw(12) << algo 
-                      << " | Cost: " << std::setw(6) << std::fixed << std::setprecision(2) << res.total_cost
-                      << " | Explored: " << std::setw(3) << res.nodes_explored
-                      << " | Latency: " << std::setw(6) << res.execution_time_ns << " ns\n";
+        auto serializeResult = [](const PathResult& r) -> std::string {
+            std::ostringstream ss;
+            ss << "{\n"
+               << "      \"found\": " << (r.found ? "true" : "false") << ",\n"
+               << "      \"total_cost\": " << (r.found ? r.total_cost : -1.0) << ",\n"
+               << "      \"nodes_explored\": " << r.nodes_explored << ",\n"
+               << "      \"latency_ns\": " << r.execution_time_ns << ",\n"
+               << "      \"path\": [";
+            for (size_t i = 0; i < r.label_path.size(); ++i) {
+                ss << "\"" << r.label_path[i] << "\"" << (i + 1 < r.label_path.size() ? ", " : "");
+            }
+            ss << "]\n    }";
+            return ss.str();
         };
 
-        printMetricRow("Dijkstra", dijkstra_res);
-        printMetricRow("A* (Euclid)", astar_res);
-
-        std::cout << "---------------------------------------------------------------\n";
-        std::cout << "Optimal Path: ";
-        for (size_t i = 0; i < astar_res.label_path.size(); ++i) {
-            std::cout << astar_res.label_path[i] << (i + 1 < astar_res.label_path.size() ? " -> " : "");
-        }
-        std::cout << "\n===============================================================\n\n";
+        std::ostringstream response;
+        response << "{\n"
+                 << "  \"query\": {\"start\": \"" << start_label << "\", \"end\": \"" << end_label << "\"},\n"
+                 << "  \"dijkstra\": " << serializeResult(d_res) << ",\n"
+                 << "  \"astar\": " << serializeResult(a_res) << "\n"
+                 << "}";
+        return response.str();
     }
 };
+
+// ============================================================================
+// Application Entry Point
+// ============================================================================
 
 int main() {
     std::ios_base::sync_with_stdio(false);
     std::cin.tie(nullptr);
-
-    NavigationService nav_service;
-    nav_service.bootstrapCampusNetwork();
-
-    // Baseline queries
-    std::cout << "[PHASE 1: Standard Campus Routing]\n";
-    nav_service.runBenchmark("Gate_A", "Hostel_Tower");
-
-    // Dynamic condition change (Simulate heavy maintenance / roadblock between Library and Hostel)
-    std::cout << "[PHASE 2: Dynamic Traffic Incident Simulation]\n";
-    nav_service.simulateIncident("Central_Library", "Hostel_Tower", 10.0);
-    nav_service.runBenchmark("Gate_A", "Hostel_Tower");
-
-
-    //to deploy
 
     NavigationService service;
     service.bootstrapCampusNetwork();
 
     httplib::Server svr;
 
-    // Health check endpoint
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content("{\"status\": \"healthy\"}", "application/json");
+        res.set_content("{\"status\": \"healthy\"}\n", "application/json");
     });
 
-    // Routing endpoint: e.g., /route?src=Gate_A&dst=Hostel_Tower
     svr.Get("/route", [&](const httplib::Request& req, httplib::Response& res) {
         std::string src = req.get_param_value("src");
         std::string dst = req.get_param_value("dst");
 
         if (src.empty() || dst.empty()) {
             res.status = 400;
-            res.set_content("{\"error\": \"Query parameters 'src' and 'dst' are required.\"}", "application/json");
+            res.set_content("{\"error\": \"Query parameters 'src' and 'dst' are required.\"}\n", "application/json");
             return;
         }
 
-        // Use your service to compute routes and return serialized results
-        std::ostringstream out;
-        out << "{\n"
-            << "  \"source\": \"" << src << "\",\n"
-            << "  \"target\": \"" << dst << "\",\n"
-            << "  \"engine\": \"UnifiedRoutingEngine\"\n"
-            << "}";
-
-        res.set_content(out.str(), "application/json");
+        std::string json_output = service.routeToJson(src, dst);
+        if (json_output.rfind("{\"error\"", 0) == 0) {
+            res.status = 404;
+        }
+        res.set_content(json_output + "\n", "application/json");
     });
 
-    // Cloud services inject PORT environment variable dynamically
-    const char* port_env = std::getenv("PORT");
-    int port = port_env ? std::stoi(port_env) : 8080;
+    svr.Post("/incident", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string from = req.get_param_value("from");
+        std::string to = req.get_param_value("to");
+        std::string factor_str = req.get_param_value("factor");
 
-    std::cout << "Server active on port " << port << "...\n";
-    svr.listen("0.0.0.0", port);
+        if (from.empty() || to.empty() || factor_str.empty()) {
+            res.status = 400;
+            res.set_content("{\"error\": \"Parameters 'from', 'to', and 'factor' are required.\"}\n", "application/json");
+            return;
+        }
+
+        try {
+            double factor = std::stod(factor_str);
+            if (service.simulateIncident(from, to, factor)) {
+                res.set_content("{\"status\": \"incident recorded\", \"factor\": " + factor_str + "}\n", "application/json");
+            } else {
+                res.status = 404;
+                res.set_content("{\"error\": \"Landmark not found or invalid edge.\"}\n", "application/json");
+            }
+        } catch (...) {
+            res.status = 400;
+            res.set_content("{\"error\": \"Invalid numerical factor value.\"}\n", "application/json");
+        }
+    });
+
+    int port = 10000;
+    const char* port_env = std::getenv("PORT");
+    if (port_env && *port_env) {
+        try {
+            port = std::stoi(port_env);
+        } catch (...) {
+            port = 10000;
+        }
+    }
+
+    std::cout << "[SERVER STARTUP] Navigation Engine listening on 0.0.0.0:" << port << std::endl;
+    
+    if (!svr.listen("0.0.0.0", port)) {
+        std::cerr << "[FATAL] Failed to bind to port " << port << std::endl;
+        return 1;
+    }
 
     return 0;
 }
