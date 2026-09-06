@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <vector>
+#include "httplib.h"
 #include <queue>
 #include <cmath>
 #include <string>
@@ -309,6 +310,48 @@ int main() {
     std::cout << "[PHASE 2: Dynamic Traffic Incident Simulation]\n";
     nav_service.simulateIncident("Central_Library", "Hostel_Tower", 10.0);
     nav_service.runBenchmark("Gate_A", "Hostel_Tower");
+
+
+    //to deploy
+
+    NavigationService service;
+    service.bootstrapCampusNetwork();
+
+    httplib::Server svr;
+
+    // Health check endpoint
+    svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"status\": \"healthy\"}", "application/json");
+    });
+
+    // Routing endpoint: e.g., /route?src=Gate_A&dst=Hostel_Tower
+    svr.Get("/route", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string src = req.get_param_value("src");
+        std::string dst = req.get_param_value("dst");
+
+        if (src.empty() || dst.empty()) {
+            res.status = 400;
+            res.set_content("{\"error\": \"Query parameters 'src' and 'dst' are required.\"}", "application/json");
+            return;
+        }
+
+        // Use your service to compute routes and return serialized results
+        std::ostringstream out;
+        out << "{\n"
+            << "  \"source\": \"" << src << "\",\n"
+            << "  \"target\": \"" << dst << "\",\n"
+            << "  \"engine\": \"UnifiedRoutingEngine\"\n"
+            << "}";
+
+        res.set_content(out.str(), "application/json");
+    });
+
+    // Cloud services inject PORT environment variable dynamically
+    const char* port_env = std::getenv("PORT");
+    int port = port_env ? std::stoi(port_env) : 8080;
+
+    std::cout << "Server active on port " << port << "...\n";
+    svr.listen("0.0.0.0", port);
 
     return 0;
 }
